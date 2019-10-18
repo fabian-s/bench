@@ -70,7 +70,7 @@ describe("mark", {
 
     expect_equal(length(res$memory), 2)
 
-    expect_is(res$memory[[1]], "Rprofmem")
+    expect_is(res$memory[[1]], "data.frame")
     expect_equal(ncol(res$memory[[1]]), 3)
     expect_gte(nrow(res$memory[[1]]), 0)
   })
@@ -82,10 +82,20 @@ describe("mark", {
 
     expect_equal(length(res$memory), 2)
 
-    expect_is(res$memory[[1]], "Rprofmem")
+    expect_is(res$memory[[1]], "data.frame")
     expect_equal(ncol(res$memory[[1]]), 3)
     expect_equal(nrow(res$memory[[1]]), 0)
   })
+  it("handles memory profiling failues", {
+    keep_busy <- function(n = 5e3) {
+      r <- rnorm(n)
+      p <- pnorm(r)
+      q <- qnorm(p)
+      o <- order(q)
+    }
+    expect_warning(mark(parallel::mclapply(seq_len(1e4), keep_busy, mc.cores = 8)))
+  })
+
   it("Can handle `NULL` results", {
     res <- mark(if (FALSE) 1, max_iterations = 10)
     expect_equal(res$result[[1]], NULL)

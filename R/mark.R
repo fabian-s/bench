@@ -3,9 +3,9 @@ NULL
 
 #' Benchmark a series of functions
 #'
-#' Benchmark a list of quoted expressions. Each expression will always run at
-#' least twice, once to measure the memory allocation and store results and one
-#' or more times to measure timing.
+#' Benchmark a list of quoted expressions. Each expression will always run one
+#' or more times to measure timing and once to store results and/or measure the
+#' memory allocation, see `check` and `memory` arguments.
 #'
 #' @param ... Expressions to benchmark, if named the `expression` column will
 #'   be the name, otherwise it will be the deparsed expression.
@@ -22,6 +22,7 @@ NULL
 #'   with [all.equal()], if `FALSE` checking is disabled. If `check` is a
 #'   function that function will be called with each pair of results to
 #'   determine consistency.
+#' @param memory Profile memory allocation? Defaults to `TRUE`.
 #' @param env The environment which to evaluate the expressions
 #' @inheritParams summary.bench_mark
 #' @inherit summary.bench_mark return
@@ -37,7 +38,7 @@ NULL
 #'   subset(dat, x > 500))
 #' @export
 mark <- function(..., min_time = .5, iterations = NULL, min_iterations = 1,
-                 max_iterations = 10000, check = TRUE, filter_gc = TRUE,
+                 max_iterations = 10000, check = TRUE, memory = TRUE, filter_gc = TRUE,
                  relative = FALSE, time_unit = NULL, exprs = NULL, env = parent.frame()) {
 
   if (!is.null(iterations)) {
@@ -53,54 +54,58 @@ mark <- function(..., min_time = .5, iterations = NULL, min_iterations = 1,
   } else {
     check <- FALSE
   }
+  profile_memory <- memory & capabilities("profmem")
 
   if (is.null(exprs)) {
     exprs <- dots(...)
   }
 
-  results <- list(expression = new_bench_expr(exprs), result = list(), memory = list(), time = list(), gc = list())
+  results <- list(expression = new_bench_expr(exprs), result = list(),
+                  memory = list(), time = list(), gc = list())
+
 
   # Helper for evaluating with memory profiling
-  eval_one <- function(e) {
+  eval_one <- function(expr) {
     f <- tempfile()
     on.exit(unlink(f))
-    can_profile_memory <- capabilities("profmem")
-    if (can_profile_memory) {
+    if (profile_memory) {
       utils::Rprofmem(f, threshold = 1)
     }
-
-    res <- eval(e, env)
-    if (can_profile_memory) {
+    res <- eval(expr, env)
+    if (profile_memory) {
       utils::Rprofmem(NULL)
     }
     list(result = res, memory = parse_allocations(f))
   }
 
   # Run allocation benchmark and check results
-  for (i in seq_len(length(exprs))) {
-    res <- eval_one(exprs[[i]])
-    if (is.null(res$result)) {
-      results$result[i] <- list(res$result)
-    } else {
-      results$result[[i]] <- res$result
-    }
-    results$memory[[i]] <- res$memory
+  if (memory | isTRUE(check)) {
+    for (i in seq_len(length(exprs))) {
+      res <- eval_one(exprs[[i]])
+      if (is.null(res$result)) {
+        results$result[i] <- list(res$result)
+      } else {
+        results$result[[i]] <- res$result
+      }
+      results$memory[[i]] <- res$memory
 
-    if (isTRUE(check) && i > 1) {
-      comp <- check_fun(results$result[[1]], results$result[[i]])
-      if (!isTRUE(comp)) {
-        stop(glue::glue("
+      if (isTRUE(check) && i > 1) {
+        comp <- check_fun(results$result[[1]], results$result[[i]])
+        if (!isTRUE(comp)) {
+          stop(glue::glue("
             Each result must equal the first result:
               `{first}` does not equal `{current}`
             ",
-            first = results$expression[[1]],
-            current = results$expression[[i]]
-            ),
+                          first = results$expression[[1]],
+                          current = results$expression[[i]]
+          ),
           call. = FALSE
-        )
+          )
+        }
       }
     }
   }
+
 
   for (i in seq_len(length(exprs))) {
     error <- NULL
@@ -251,20 +256,23 @@ summary.bench_mark <- function(object, filter_gc = TRUE, relative = FALSE, time_
 }
 
 parse_allocations <- function(filename) {
+  empty_Rprofmem <- structure(
+    list(what = character(),
+         bytes = integer(),
+         trace = list()),
+    class = c("Rprofmem",
+              "data.frame"))
 
   if (!file.exists(filename)) {
-    empty_Rprofmem <- structure(
-      list(what = character(),
-        bytes = integer(),
-        trace = list()),
-      class = c("Rprofmem",
-        "data.frame"))
-
     return(empty_Rprofmem)
   }
 
   # TODO: remove this dependency / simplify parsing
-  profmem::readRprofmem(filename)
+  tryCatch(profmem::readRprofmem(filename),
+           error = function(e) {
+             warning("memory trace failed.")
+             empty_Rprofmem
+           })
 }
 
 dots <- function(...) {
