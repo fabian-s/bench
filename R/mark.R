@@ -22,7 +22,9 @@ NULL
 #'   with [all.equal()], if `FALSE` checking is disabled. If `check` is a
 #'   function that function will be called with each pair of results to
 #'   determine consistency.
-#' @param memory Profile memory allocation? Defaults to `TRUE`.
+#' @param memory Profile memory allocation? Defaults to `TRUE`. Can
+#'   Cann also be a vector to switch memory profiling  on or off for each
+#'   element in `exprs`.
 #' @param env The environment which to evaluate the expressions
 #' @inheritParams summary.bench_mark
 #' @inherit summary.bench_mark return
@@ -54,18 +56,25 @@ mark <- function(..., min_time = .5, iterations = NULL, min_iterations = 1,
   } else {
     check <- FALSE
   }
-  profile_memory <- memory & capabilities("profmem")
 
   if (is.null(exprs)) {
     exprs <- dots(...)
   }
 
-  results <- list(expression = new_bench_expr(exprs), result = list(),
-                  memory = list(), time = list(), gc = list())
+  if (length(memory) == 1) {
+    memory <- rep(memory, length(exprs))
+  }
+  stopifnot(length(memory) == length(exprs))
+  profile_memory <- memory & capabilities("profmem")
+
+  results <- list(expression = new_bench_expr(exprs),
+                  result = replicate(length(exprs), NULL),
+                  memory = replicate(length(exprs), NULL),
+                  time = list(), gc = list())
 
 
   # Helper for evaluating with memory profiling
-  eval_one <- function(expr) {
+  eval_one <- function(expr, profile_memory) {
     f <- tempfile()
     on.exit(unlink(f))
     if (profile_memory) {
@@ -79,9 +88,9 @@ mark <- function(..., min_time = .5, iterations = NULL, min_iterations = 1,
   }
 
   # Run allocation benchmark and check results
-  if (memory | isTRUE(check)) {
-    for (i in seq_len(length(exprs))) {
-      res <- eval_one(exprs[[i]])
+  for (i in seq_len(length(exprs))) {
+    if (profile_memory[i] | isTRUE(check)) {
+      res <- eval_one(exprs[[i]], profile_memory[i])
       if (is.null(res$result)) {
         results$result[i] <- list(res$result)
       } else {
@@ -111,7 +120,8 @@ mark <- function(..., min_time = .5, iterations = NULL, min_iterations = 1,
     error <- NULL
     gc_msg <- with_gcinfo({
       tryCatch(error = function(e) { e$call <- NULL; error <<- e},
-      res <- .Call(mark_, exprs[[i]], env, min_time, as.integer(min_iterations), as.integer(max_iterations))
+      res <- .Call(mark_, exprs[[i]], env, min_time, as.integer(min_iterations),
+                   as.integer(max_iterations))
       )
     })
     if (!is.null(error)) {
@@ -236,7 +246,14 @@ summary.bench_mark <- function(object, filter_gc = TRUE, relative = FALSE, time_
 
   object$mem_alloc <-
     bench_bytes(
-      vdapply(object$memory, function(x) if (is.null(x)) NA else sum(x$bytes, na.rm = TRUE)))
+      vdapply(object$memory, function(x) {
+        if (is.null(x) || x$trace[1] == "*FAILED*") {
+          NA
+        } else {
+          sum(x$bytes, na.rm = TRUE)
+        }
+      })
+    )
 
   if (isTRUE(relative)) {
     object[summary_cols] <- lapply(object[summary_cols], function(x) as.numeric(x / min(x)))
@@ -270,8 +287,14 @@ parse_allocations <- function(filename) {
   # TODO: remove this dependency / simplify parsing
   tryCatch(profmem::readRprofmem(filename),
            error = function(e) {
-             warning("memory trace failed.")
-             empty_Rprofmem
+             warning("memory profiling failed.")
+             structure(
+               list(what = NA_character_,
+                    bytes = NA_integer_,
+                    trace = list("*FAILED*")),
+               class = c("Rprofmem",
+                         "data.frame"),
+               row.names = "")
            })
 }
 
